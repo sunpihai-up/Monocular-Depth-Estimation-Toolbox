@@ -64,13 +64,17 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # 加载配置文件, 可选参数不为空, 则保存进cfg变量中
     cfg = Config.fromfile(args.config)
     if args.options is not None:
         cfg.merge_from_dict(args.options)
+    
+    # 如果配置文件中的cudnn_benchmark为True，则设置PyTorch的cudnn加速模式为启用。
     # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
 
+    # 如果可选参数中有work_dir, 则覆盖; 否则使用配置文件名和默认路径拼接作为cfg.work_dir的值
     # work_dir is determined in this priority: CLI > segment in file > filename
     if args.work_dir is not None:
         # update configs according to CLI args if args.work_dir is not None
@@ -79,6 +83,8 @@ def main():
         # use config filename as default work_dir if cfg.work_dir is None
         cfg.work_dir = osp.join('./work_dirs',
                                 osp.splitext(osp.basename(args.config))[0])
+    
+    # 根据命令行参数设置cfg.load_from、cfg.resume_from和cfg.gpu_ids的值。
     if args.load_from is not None:
         cfg.load_from = args.load_from
     if args.resume_from is not None:
@@ -88,6 +94,7 @@ def main():
     else:
         cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
 
+    # 初始化分布式环境
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':
         distributed = False
@@ -99,6 +106,7 @@ def main():
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
     # dump config
     cfg.dump(osp.join(cfg.work_dir, osp.basename(args.config)))
+
     # init the logger before other steps
     timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
     log_file = osp.join(cfg.work_dir, f'{timestamp}.log')
@@ -115,7 +123,7 @@ def main():
                 dash_line)
     meta['env_info'] = env_info
 
-    # log some basic info
+    # log some basic info(记录分布式训练和配置信息到日志中。)
     logger.info(f'Distributed training: {distributed}')
     logger.info(f'Config:\n{cfg.pretty_text}')
 
@@ -128,17 +136,20 @@ def main():
     meta['seed'] = args.seed
     meta['exp_name'] = osp.basename(args.config)
 
+    # 构建深度模型并初始化权重
     model = build_depther(
         cfg.model,
         train_cfg=cfg.get('train_cfg'),
         test_cfg=cfg.get('test_cfg'))
     model.init_weights()
 
+    # 如果配置文件中启用了SyncBN，将模型中的Batch Normalization层转换为SyncBatchNorm。
     # NOTE: set all the bn to syncbn
     import torch.nn as nn
     if cfg.get('SyncBN', False):
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
+    # 将模型结构记录到日志中。
     logger.info(model)
 
     datasets = [build_dataset(cfg.data.train)]
